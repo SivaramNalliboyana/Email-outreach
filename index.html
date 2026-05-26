@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cold Outreach</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .chip { transition: all 0.15s ease; }
+  .chip:hover { transform: translateY(-1px); }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen antialiased">
+
+<div class="max-w-6xl mx-auto px-6 py-10">
+
+  <header class="mb-10">
+    <h1 class="text-3xl font-bold tracking-tight">Cold Outreach</h1>
+    <p class="text-slate-500 mt-1">Upload a list, write a template, send personalized emails.</p>
+  </header>
+
+  <!-- Step 1: Upload -->
+  <section class="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 p-6 mb-6">
+    <div class="flex items-center gap-3 mb-4">
+      <span class="flex h-7 w-7 items-center justify-center rounded-full bg-indigo-600 text-white text-sm font-semibold">1</span>
+      <h2 class="text-lg font-semibold">Upload recipient list</h2>
+    </div>
+
+    <label id="dropzone" for="fileInput" class="block border-2 border-dashed border-slate-300 rounded-xl p-10 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition">
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" class="hidden" />
+      <svg class="mx-auto h-10 w-10 text-slate-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 7.5m0 0L7.5 12m4.5-4.5v12" />
+      </svg>
+      <p class="text-slate-700 font-medium">Drop a file here or click to upload</p>
+      <p class="text-slate-400 text-sm mt-1">.xlsx, .xls, or .csv — must include name and email columns</p>
+    </label>
+
+    <div id="uploadResult" class="hidden mt-5">
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div class="flex items-center gap-2 text-sm">
+          <svg class="h-5 w-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+          <span id="parseSummary" class="text-slate-700"></span>
+        </div>
+        <div class="flex items-center gap-3">
+          <label class="text-sm text-slate-600">Email column:</label>
+          <select id="emailField" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></select>
+          <button id="toggleTable" class="text-sm text-indigo-600 hover:text-indigo-700 font-medium">Show all</button>
+        </div>
+      </div>
+
+      <div id="tableWrap" class="hidden mt-4 max-h-80 overflow-auto scrollbar-thin border border-slate-200 rounded-lg">
+        <table class="min-w-full text-sm">
+          <thead class="bg-slate-100 sticky top-0">
+            <tr id="tableHead"></tr>
+          </thead>
+          <tbody id="tableBody" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 2: Template -->
+  <section id="templateSection" class="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 p-6 mb-6 opacity-50 pointer-events-none">
+    <div class="flex items-center gap-3 mb-4">
+      <span class="flex h-7 w-7 items-center justify-center rounded-full bg-indigo-600 text-white text-sm font-semibold">2</span>
+      <h2 class="text-lg font-semibold">Compose template</h2>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="md:col-span-2 space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">Subject</label>
+          <input type="text" id="subjectInput" placeholder="Quick question, {{name}}" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">Body</label>
+          <textarea id="bodyInput" rows="10" placeholder="Hi {{name}},&#10;&#10;Saw what you're building at {{company}} and wanted to reach out..." class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm leading-relaxed focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+        </div>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <h3 class="text-sm font-medium text-slate-700 mb-2">Available variables</h3>
+          <div id="placeholderChips" class="flex flex-wrap gap-2"></div>
+          <p class="text-xs text-slate-400 mt-2">Click to insert at cursor</p>
+        </div>
+        <div id="templateWarnings" class="hidden text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 3: Preview -->
+  <section id="previewSection" class="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 p-6 mb-6 opacity-50 pointer-events-none">
+    <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+      <div class="flex items-center gap-3">
+        <span class="flex h-7 w-7 items-center justify-center rounded-full bg-indigo-600 text-white text-sm font-semibold">3</span>
+        <h2 class="text-lg font-semibold">Preview</h2>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="prevPreview" class="px-2 py-1 text-slate-500 hover:text-slate-700 disabled:opacity-30" disabled>←</button>
+        <select id="previewSelect" class="text-sm border border-slate-300 rounded-lg px-3 py-1.5 bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 min-w-[200px]"></select>
+        <button id="nextPreview" class="px-2 py-1 text-slate-500 hover:text-slate-700 disabled:opacity-30" disabled>→</button>
+      </div>
+    </div>
+
+    <div class="border border-slate-200 rounded-xl overflow-hidden">
+      <div class="bg-slate-50 px-4 py-2.5 text-xs text-slate-500 border-b border-slate-200 space-y-0.5">
+        <div><span class="font-medium text-slate-600">To:</span> <span id="previewTo" class="text-slate-800"></span></div>
+        <div><span class="font-medium text-slate-600">Subject:</span> <span id="previewSubject" class="text-slate-800"></span></div>
+      </div>
+      <div id="previewBody" class="px-4 py-4 text-sm text-slate-800 whitespace-pre-wrap min-h-[160px]"></div>
+    </div>
+  </section>
+
+  <!-- Step 4: Send -->
+  <section id="sendSection" class="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 p-6 mb-10 opacity-50 pointer-events-none">
+    <div class="flex items-center gap-3 mb-5">
+      <span class="flex h-7 w-7 items-center justify-center rounded-full bg-indigo-600 text-white text-sm font-semibold">4</span>
+      <h2 class="text-lg font-semibold">Send</h2>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-5">
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">Delay between emails</label>
+        <div class="flex items-center gap-3">
+          <input type="range" id="delaySlider" min="500" max="5000" step="500" value="1000" class="flex-1 accent-indigo-600" />
+          <span id="delayLabel" class="text-sm text-slate-600 w-14 text-right">1.0 s</span>
+        </div>
+        <p class="text-xs text-slate-400 mt-1">Slower sends look more human and avoid rate limits.</p>
+      </div>
+      <div class="flex items-end">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="dryRun" checked class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+          <span class="text-sm text-slate-700">Dry run <span class="text-slate-400">(simulate, no actual sends)</span></span>
+        </label>
+      </div>
+    </div>
+
+    <button id="sendBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-medium py-3 rounded-lg transition disabled:bg-slate-300 disabled:cursor-not-allowed">
+      Send to <span id="sendCount">0</span> recipients
+    </button>
+
+    <div id="progressWrap" class="hidden mt-6">
+      <div class="flex justify-between items-center text-sm text-slate-600 mb-2">
+        <span id="progressLabel">Sending...</span>
+        <span id="progressCount">0 / 0</span>
+      </div>
+      <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+        <div id="progressBar" class="bg-indigo-600 h-full transition-all" style="width:0%"></div>
+      </div>
+      <div id="progressList" class="mt-4 max-h-64 overflow-auto scrollbar-thin border border-slate-200 rounded-lg divide-y divide-slate-100"></div>
+    </div>
+  </section>
+
+  <footer class="text-center text-xs text-slate-400 pb-6">
+    <span id="authStatus">Checking Gmail connection…</span>
+  </footer>
+</div>
+
+<script>
+// ---------- State ----------
+const state = {
+  rows: [],
+  fields: [],
+  emailField: null,
+  template: { subject: "", body: "" },
+  previewIdx: 0,
+  delayMs: 1000,
+  dryRun: true,
+  sending: false,
+  statuses: {} // idx -> 'pending' | 'sending' | 'sent' | 'failed'
+};
+
+const $ = (id) => document.getElementById(id);
+
+// ---------- Persistence ----------
+const STORE_KEY = "coldOutreachTemplate";
+function loadTemplate() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
+    if (saved.subject) { state.template.subject = saved.subject; $("subjectInput").value = saved.subject; }
+    if (saved.body) { state.template.body = saved.body; $("bodyInput").value = saved.body; }
+  } catch (e) {}
+}
+function saveTemplate() {
+  localStorage.setItem(STORE_KEY, JSON.stringify(state.template));
+}
+
+// ---------- File upload ----------
+const dropzone = $("dropzone");
+const fileInput = $("fileInput");
+
+["dragenter", "dragover"].forEach(ev => {
+  dropzone.addEventListener(ev, e => {
+    e.preventDefault();
+    dropzone.classList.add("border-indigo-500", "bg-indigo-50/50");
+  });
+});
+["dragleave", "drop"].forEach(ev => {
+  dropzone.addEventListener(ev, e => {
+    e.preventDefault();
+    dropzone.classList.remove("border-indigo-500", "bg-indigo-50/50");
+  });
+});
+dropzone.addEventListener("drop", e => {
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(file);
+});
+fileInput.addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (file) handleFile(file);
+});
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      if (!rows.length) {
+        alert("File parsed but contained no rows.");
+        return;
+      }
+      state.rows = rows;
+      state.fields = Object.keys(rows[0]);
+      state.emailField = detectEmailField(state.fields);
+      state.statuses = {};
+      $("parseSummary").textContent = `Parsed ${rows.length} rows from "${file.name}" (${state.fields.length} columns)`;
+      $("uploadResult").classList.remove("hidden");
+      renderEmailFieldSelect();
+      renderTable();
+      renderPlaceholderChips();
+      renderPreviewSelect();
+      unlockSections();
+      updateAll();
+    } catch (err) {
+      alert("Couldn't parse that file: " + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function detectEmailField(fields) {
+  const lower = fields.map(f => f.toLowerCase());
+  const idx = lower.findIndex(f => f === "email" || f === "e-mail" || f.includes("email"));
+  return idx >= 0 ? fields[idx] : fields[0];
+}
+
+function renderEmailFieldSelect() {
+  const sel = $("emailField");
+  sel.innerHTML = state.fields.map(f =>
+    `<option value="${escapeAttr(f)}" ${f === state.emailField ? "selected" : ""}>${escapeHtml(f)}</option>`
+  ).join("");
+  sel.onchange = () => { state.emailField = sel.value; renderPreviewSelect(); updateAll(); };
+}
+
+let tableExpanded = false;
+function renderTable() {
+  const head = $("tableHead");
+  const body = $("tableBody");
+  head.innerHTML = state.fields.map(f =>
+    `<th class="px-3 py-2 text-left font-semibold text-slate-600 whitespace-nowrap">${escapeHtml(f)}</th>`
+  ).join("");
+  const rowsToShow = tableExpanded ? state.rows : state.rows.slice(0, 5);
+  body.innerHTML = rowsToShow.map(row =>
+    `<tr class="hover:bg-slate-50">${state.fields.map(f =>
+      `<td class="px-3 py-2 text-slate-700 whitespace-nowrap">${escapeHtml(String(row[f] ?? ""))}</td>`
+    ).join("")}</tr>`
+  ).join("");
+  $("toggleTable").textContent = tableExpanded ? "Show less" : `Show all (${state.rows.length})`;
+  $("tableWrap").classList.remove("hidden");
+}
+$("toggleTable").onclick = () => { tableExpanded = !tableExpanded; renderTable(); };
+
+// ---------- Template ----------
+function renderPlaceholderChips() {
+  const wrap = $("placeholderChips");
+  wrap.innerHTML = state.fields.map(f =>
+    `<button type="button" data-field="${escapeAttr(f)}" class="chip text-xs px-2.5 py-1 bg-indigo-50 text-indigo-700 rounded-full hover:bg-indigo-100 font-mono">{{${escapeHtml(f)}}}</button>`
+  ).join("");
+  wrap.querySelectorAll("button").forEach(btn => {
+    btn.onclick = () => insertAtCursor("{{" + btn.dataset.field + "}}");
+  });
+}
+
+let lastFocused = null;
+["subjectInput", "bodyInput"].forEach(id => {
+  const el = $(id);
+  el.addEventListener("focus", () => lastFocused = el);
+  el.addEventListener("input", () => {
+    state.template.subject = $("subjectInput").value;
+    state.template.body = $("bodyInput").value;
+    saveTemplate();
+    updateAll();
+  });
+});
+
+function insertAtCursor(text) {
+  const el = lastFocused || $("bodyInput");
+  el.focus();
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  const pos = start + text.length;
+  el.setSelectionRange(pos, pos);
+  el.dispatchEvent(new Event("input"));
+}
+
+function renderTemplateWarnings() {
+  const warn = $("templateWarnings");
+  const combined = state.template.subject + " " + state.template.body;
+  const used = [...combined.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]);
+  const unique = [...new Set(used)];
+  const issues = [];
+  unique.forEach(p => {
+    if (!state.fields.includes(p)) {
+      issues.push(`<code class="font-mono bg-amber-100 px-1 rounded">{{${escapeHtml(p)}}}</code> is not a column in your file`);
+    } else {
+      const missing = state.rows.filter(r => !String(r[p] ?? "").trim()).length;
+      if (missing > 0) issues.push(`<code class="font-mono bg-amber-100 px-1 rounded">{{${escapeHtml(p)}}}</code> is empty in ${missing} row${missing === 1 ? "" : "s"}`);
+    }
+  });
+  if (!issues.length) { warn.classList.add("hidden"); return; }
+  warn.innerHTML = `<div class="font-medium mb-1">Template warnings</div><ul class="list-disc list-inside space-y-0.5">${issues.map(i => `<li>${i}</li>`).join("")}</ul>`;
+  warn.classList.remove("hidden");
+}
+
+// ---------- Preview ----------
+function renderPreviewSelect() {
+  const sel = $("previewSelect");
+  sel.innerHTML = state.rows.map((r, i) => {
+    const email = String(r[state.emailField] ?? "(no email)");
+    return `<option value="${i}">${i + 1}. ${escapeHtml(email)}</option>`;
+  }).join("");
+  sel.onchange = () => { state.previewIdx = parseInt(sel.value, 10); renderPreview(); };
+  state.previewIdx = 0;
+}
+$("prevPreview").onclick = () => { if (state.previewIdx > 0) { state.previewIdx--; $("previewSelect").value = state.previewIdx; renderPreview(); } };
+$("nextPreview").onclick = () => { if (state.previewIdx < state.rows.length - 1) { state.previewIdx++; $("previewSelect").value = state.previewIdx; renderPreview(); } };
+
+function renderTemplate(text, row) {
+  return text.replace(/\{\{(\w+)\}\}/g, (_, key) => String(row[key] ?? `{{${key}}}`));
+}
+
+function renderPreview() {
+  const row = state.rows[state.previewIdx];
+  if (!row) return;
+  $("previewTo").textContent = String(row[state.emailField] ?? "(no email)");
+  $("previewSubject").textContent = renderTemplate(state.template.subject || "(no subject)", row);
+  $("previewBody").textContent = renderTemplate(state.template.body || "(empty body)", row);
+  $("prevPreview").disabled = state.previewIdx === 0;
+  $("nextPreview").disabled = state.previewIdx >= state.rows.length - 1;
+}
+
+// ---------- Send ----------
+$("delaySlider").oninput = (e) => {
+  state.delayMs = parseInt(e.target.value, 10);
+  $("delayLabel").textContent = (state.delayMs / 1000).toFixed(1) + " s";
+};
+$("dryRun").onchange = (e) => { state.dryRun = e.target.checked; };
+
+$("sendBtn").onclick = async () => {
+  if (state.sending) return;
+  const validRows = state.rows.filter(r => String(r[state.emailField] ?? "").includes("@"));
+  if (!validRows.length) { alert("No rows have a valid email address."); return; }
+  if (!state.template.subject.trim() && !state.template.body.trim()) {
+    if (!confirm("Subject and body are empty. Send anyway?")) return;
+  }
+  const label = state.dryRun ? "simulate" : "actually send";
+  if (!confirm(`About to ${label} ${validRows.length} emails. Continue?`)) return;
+
+  state.sending = true;
+  $("sendBtn").disabled = true;
+  $("progressWrap").classList.remove("hidden");
+  const list = $("progressList");
+  list.innerHTML = "";
+  state.statuses = {};
+
+  let sent = 0, failed = 0;
+  for (let i = 0; i < validRows.length; i++) {
+    const row = validRows[i];
+    const idx = state.rows.indexOf(row);
+    const li = document.createElement("div");
+    li.className = "flex items-center justify-between px-3 py-2 text-sm";
+    li.innerHTML = `<span class="text-slate-700">${escapeHtml(row[state.emailField])}</span><span class="text-amber-500 text-xs">sending...</span>`;
+    list.appendChild(li);
+    list.scrollTop = list.scrollHeight;
+
+    const result = await sendOne(row);
+    if (result.ok) {
+      sent++;
+      li.querySelector("span:last-child").outerHTML = `<span class="text-emerald-600 text-xs font-medium">✓ sent</span>`;
+    } else {
+      failed++;
+      li.querySelector("span:last-child").outerHTML = `<span class="text-rose-600 text-xs font-medium" title="${escapeAttr(result.error || "")}">✕ failed</span>`;
+    }
+    const done = i + 1;
+    $("progressCount").textContent = `${done} / ${validRows.length}`;
+    $("progressBar").style.width = (done / validRows.length * 100) + "%";
+
+    if (i < validRows.length - 1) await sleep(state.delayMs);
+  }
+
+  $("progressLabel").textContent = `Done — ${sent} sent, ${failed} failed${state.dryRun ? " (dry run)" : ""}`;
+  state.sending = false;
+  $("sendBtn").disabled = false;
+};
+
+async function sendOne(row) {
+  const payload = {
+    to: row[state.emailField],
+    subject: renderTemplate(state.template.subject, row),
+    body: renderTemplate(state.template.body, row)
+  };
+  if (state.dryRun) {
+    await sleep(120 + Math.random() * 200);
+    return { ok: true };
+  }
+  try {
+    const res = await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { ok: false, error: `HTTP ${res.status} ${text}` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ---------- Wire up ----------
+function unlockSections() {
+  ["templateSection", "previewSection", "sendSection"].forEach(id => {
+    $(id).classList.remove("opacity-50", "pointer-events-none");
+  });
+}
+
+function updateAll() {
+  renderTemplateWarnings();
+  renderPreview();
+  const validCount = state.rows.filter(r => String(r[state.emailField] ?? "").includes("@")).length;
+  $("sendCount").textContent = validCount;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+loadTemplate();
+
+// ---------- Auth status ----------
+async function refreshAuthStatus() {
+  try {
+    const r = await fetch("/api/auth-status");
+    if (!r.ok) throw new Error();
+    const { authenticated } = await r.json();
+    $("authStatus").innerHTML = authenticated
+      ? `<span class="text-emerald-600">✓ Gmail connected.</span> Turn off Dry Run to send for real. <a href="/api/auth" class="text-indigo-500 hover:text-indigo-700 underline ml-1">Reconnect</a>`
+      : `Gmail not connected. <a href="/api/auth" class="text-indigo-500 hover:text-indigo-700 underline">Connect Gmail →</a>`;
+  } catch {
+    $("authStatus").innerHTML = `Server not reachable. Run <code class="text-slate-600">npm start</code> to enable sending.`;
+  }
+}
+refreshAuthStatus();
+</script>
+
+</body>
+</html>
