@@ -1,5 +1,6 @@
 import express from "express";
 import { google } from "googleapis";
+import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
@@ -29,16 +30,76 @@ if (process.env.GMAIL_REFRESH_TOKEN) {
   oauth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
 }
 
+// ---------- SMTP (IONOS / generic) ----------
+function buildSmtp() {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) return null;
+  const port = parseInt(SMTP_PORT || "587", 10);
+  const secure = port === 465;
+  return nodemailer.createTransport({
+    host: SMTP_HOST,
+    port,
+    secure,
+    requireTLS: !secure,
+    auth: { user: SMTP_USER, pass: SMTP_PASS }
+  });
+}
+let smtpTransport = buildSmtp();
+
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 // ---------- Static ----------
 app.get("/", (_, res) => res.sendFile(path.join(__dirname, "index.html")));
 
-// ---------- Auth status ----------
+// ---------- Account status ----------
+function gmailConfigured() {
+  return !!(oauth2Client.credentials.refresh_token || process.env.GMAIL_REFRESH_TOKEN);
+}
+function smtpConfigured() {
+  return !!smtpTransport;
+}
+
+app.get("/api/accounts", (_, res) => {
+  const accounts = [];
+  if (gmailConfigured()) {
+    accounts.push({
+      id: "gmail",
+      label: "Gmail / Google Workspace",
+      from: process.env.GMAIL_FROM || null,
+      ready: true
+    });
+  } else {
+    accounts.push({
+      id: "gmail",
+      label: "Gmail / Google Workspace",
+      from: null,
+      ready: false,
+      authUrl: "/api/auth"
+    });
+  }
+  if (smtpConfigured()) {
+    accounts.push({
+      id: "ionos",
+      label: "IONOS (SMTP)",
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      ready: true
+    });
+  } else {
+    accounts.push({
+      id: "ionos",
+      label: "IONOS (SMTP)",
+      from: null,
+      ready: false,
+      hint: "Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS (and optional SMTP_FROM) in .env"
+    });
+  }
+  res.json({ accounts });
+});
+
+// Backwards-compat — Gmail-only auth status
 app.get("/api/auth-status", (_, res) => {
-  const authed = !!(oauth2Client.credentials.refresh_token || process.env.GMAIL_REFRESH_TOKEN);
-  res.json({ authenticated: authed });
+  res.json({ authenticated: gmailConfigured() });
 });
 
 // ---------- OAuth start ----------
@@ -71,7 +132,7 @@ app.get("/api/oauth-callback", async (req, res) => {
       ));
     }
 
-    const saved = saveRefreshToken(refreshToken);
+    const saved = saveEnvVar("GMAIL_REFRESH_TOKEN", refreshToken);
     process.env.GMAIL_REFRESH_TOKEN = refreshToken;
 
     const msg = saved
@@ -86,50 +147,67 @@ app.get("/api/oauth-callback", async (req, res) => {
 
 // ---------- Send ----------
 app.post("/api/send", async (req, res) => {
-  const hasAuth = !!(oauth2Client.credentials.refresh_token || process.env.GMAIL_REFRESH_TOKEN);
-  if (!hasAuth) {
-    return res.status(401).json({ error: "Not authenticated. Visit /api/auth to grant Gmail access." });
-  }
-  const { to, subject, body } = req.body || {};
+  const { to, subject, body, from } = req.body || {};
   if (!to || !String(to).includes("@")) return res.status(400).json({ error: "Invalid 'to' address" });
   if (subject == null) return res.status(400).json({ error: "Missing 'subject'" });
 
+  const account = from || (gmailConfigured() ? "gmail" : smtpConfigured() ? "ionos" : null);
+  if (!account) {
+    return res.status(401).json({ error: "No sender configured. Connect Gmail at /api/auth or set SMTP env vars." });
+  }
+
   try {
-    const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-    const raw = Buffer.from(buildMessage({ to, subject, body: body || "" })).toString("base64url");
-    const result = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
-    res.json({ ok: true, id: result.data.id });
+    if (account === "gmail") {
+      if (!gmailConfigured()) return res.status(401).json({ error: "Gmail not connected. Visit /api/auth." });
+      const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+      const raw = Buffer.from(buildMessage({ to, subject, body: body || "" })).toString("base64url");
+      const result = await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+      return res.json({ ok: true, id: result.data.id, via: "gmail" });
+    }
+    if (account === "ionos") {
+      if (!smtpConfigured()) return res.status(401).json({ error: "SMTP not configured. Set SMTP_HOST/USER/PASS in .env." });
+      const fromAddr = process.env.SMTP_FROM || process.env.SMTP_USER;
+      const info = await smtpTransport.sendMail({
+        from: fromAddr,
+        to,
+        subject,
+        text: body || ""
+      });
+      return res.json({ ok: true, id: info.messageId, via: "ionos" });
+    }
+    return res.status(400).json({ error: `Unknown sender '${account}'` });
   } catch (e) {
-    const status = e.code || 500;
+    const status = Number.isInteger(e.code) ? e.code : 500;
     res.status(status).json({ error: e.message });
   }
 });
 
 // ---------- Helpers ----------
 function buildMessage({ to, subject, body }) {
-  return [
+  const headers = [
     `To: ${to}`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=utf-8",
     "Content-Transfer-Encoding: 8bit",
-    `Subject: ${encodeSubjectIfNeeded(subject)}`,
-    "",
-    body
-  ].join("\r\n");
+    `Subject: ${encodeSubjectIfNeeded(subject)}`
+  ];
+  if (process.env.GMAIL_FROM) headers.unshift(`From: ${process.env.GMAIL_FROM}`);
+  return [...headers, "", body].join("\r\n");
 }
 
 function encodeSubjectIfNeeded(s) {
   return /^[\x00-\x7F]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s, "utf8").toString("base64")}?=`;
 }
 
-function saveRefreshToken(token) {
+function saveEnvVar(key, value) {
   const envPath = path.join(__dirname, ".env");
   try {
     let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
-    if (/^GMAIL_REFRESH_TOKEN=.*$/m.test(content)) {
-      content = content.replace(/^GMAIL_REFRESH_TOKEN=.*$/m, `GMAIL_REFRESH_TOKEN=${token}`);
+    const re = new RegExp(`^${key}=.*$`, "m");
+    if (re.test(content)) {
+      content = content.replace(re, `${key}=${value}`);
     } else {
-      content += (content.endsWith("\n") || content === "" ? "" : "\n") + `GMAIL_REFRESH_TOKEN=${token}\n`;
+      content += (content.endsWith("\n") || content === "" ? "" : "\n") + `${key}=${value}\n`;
     }
     fs.writeFileSync(envPath, content);
     return true;
@@ -157,9 +235,9 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:13px}</style></head>
 
 app.listen(PORT, () => {
   console.log(`\n  Cold Outreach running at  http://localhost:${PORT}`);
-  if (!process.env.GMAIL_REFRESH_TOKEN) {
-    console.log(`  Not authenticated yet  →  http://localhost:${PORT}/api/auth\n`);
-  } else {
-    console.log(`  Gmail connected  ✓\n`);
-  }
+  const gmail = gmailConfigured();
+  const smtp = smtpConfigured();
+  console.log(`  Gmail / Workspace  ${gmail ? "✓ connected" : "✗ not connected — visit /api/auth"}`);
+  console.log(`  IONOS SMTP         ${smtp ? `✓ ready (${process.env.SMTP_FROM || process.env.SMTP_USER})` : "✗ not configured — set SMTP_HOST/USER/PASS in .env"}`);
+  console.log("");
 });

@@ -127,18 +127,19 @@
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-5">
       <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">Send from</label>
+        <select id="senderSelect" class="w-full border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+          <option value="">Loading accounts…</option>
+        </select>
+        <p id="senderHint" class="text-xs text-slate-400 mt-1">&nbsp;</p>
+      </div>
+      <div>
         <label class="block text-sm font-medium text-slate-700 mb-1">Delay between emails</label>
         <div class="flex items-center gap-3">
           <input type="range" id="delaySlider" min="500" max="5000" step="500" value="1000" class="flex-1 accent-indigo-600" />
           <span id="delayLabel" class="text-sm text-slate-600 w-14 text-right">1.0 s</span>
         </div>
         <p class="text-xs text-slate-400 mt-1">Slower sends look more human and avoid rate limits.</p>
-      </div>
-      <div class="flex items-end">
-        <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" id="dryRun" checked class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
-          <span class="text-sm text-slate-700">Dry run <span class="text-slate-400">(simulate, no actual sends)</span></span>
-        </label>
       </div>
     </div>
 
@@ -159,7 +160,7 @@
   </section>
 
   <footer class="text-center text-xs text-slate-400 pb-6">
-    <span id="authStatus">Checking Gmail connection…</span>
+    <div id="authStatus">Checking accounts…</div>
   </footer>
 </div>
 
@@ -172,9 +173,10 @@ const state = {
   template: { subject: "", body: "" },
   previewIdx: 0,
   delayMs: 1000,
-  dryRun: true,
   sending: false,
-  statuses: {} // idx -> 'pending' | 'sending' | 'sent' | 'failed'
+  statuses: {}, // idx -> 'pending' | 'sending' | 'sent' | 'failed'
+  accounts: [],
+  sender: null
 };
 
 const $ = (id) => document.getElementById(id);
@@ -365,8 +367,6 @@ $("delaySlider").oninput = (e) => {
   state.delayMs = parseInt(e.target.value, 10);
   $("delayLabel").textContent = (state.delayMs / 1000).toFixed(1) + " s";
 };
-$("dryRun").onchange = (e) => { state.dryRun = e.target.checked; };
-
 $("sendBtn").onclick = async () => {
   if (state.sending) return;
   const validRows = state.rows.filter(r => String(r[state.emailField] ?? "").includes("@"));
@@ -374,8 +374,7 @@ $("sendBtn").onclick = async () => {
   if (!state.template.subject.trim() && !state.template.body.trim()) {
     if (!confirm("Subject and body are empty. Send anyway?")) return;
   }
-  const label = state.dryRun ? "simulate" : "actually send";
-  if (!confirm(`About to ${label} ${validRows.length} emails. Continue?`)) return;
+  if (!confirm(`About to send ${validRows.length} emails. Continue?`)) return;
 
   state.sending = true;
   $("sendBtn").disabled = true;
@@ -409,7 +408,7 @@ $("sendBtn").onclick = async () => {
     if (i < validRows.length - 1) await sleep(state.delayMs);
   }
 
-  $("progressLabel").textContent = `Done — ${sent} sent, ${failed} failed${state.dryRun ? " (dry run)" : ""}`;
+  $("progressLabel").textContent = `Done — ${sent} sent, ${failed} failed`;
   state.sending = false;
   $("sendBtn").disabled = false;
 };
@@ -418,12 +417,9 @@ async function sendOne(row) {
   const payload = {
     to: row[state.emailField],
     subject: renderTemplate(state.template.subject, row),
-    body: renderTemplate(state.template.body, row)
+    body: renderTemplate(state.template.body, row),
+    from: state.sender
   };
-  if (state.dryRun) {
-    await sleep(120 + Math.random() * 200);
-    return { ok: true };
-  }
   try {
     const res = await fetch("/api/send", {
       method: "POST",
@@ -463,20 +459,71 @@ function escapeAttr(s) { return escapeHtml(s); }
 
 loadTemplate();
 
-// ---------- Auth status ----------
-async function refreshAuthStatus() {
+// ---------- Accounts (Gmail + IONOS SMTP) ----------
+async function loadAccounts() {
   try {
-    const r = await fetch("/api/auth-status");
+    const r = await fetch("/api/accounts");
     if (!r.ok) throw new Error();
-    const { authenticated } = await r.json();
-    $("authStatus").innerHTML = authenticated
-      ? `<span class="text-emerald-600">✓ Gmail connected.</span> Turn off Dry Run to send for real. <a href="/api/auth" class="text-indigo-500 hover:text-indigo-700 underline ml-1">Reconnect</a>`
-      : `Gmail not connected. <a href="/api/auth" class="text-indigo-500 hover:text-indigo-700 underline">Connect Gmail →</a>`;
+    const { accounts } = await r.json();
+    state.accounts = accounts;
+    renderSenderSelect();
+    renderAuthStatus();
   } catch {
     $("authStatus").innerHTML = `Server not reachable. Run <code class="text-slate-600">npm start</code> to enable sending.`;
+    $("senderSelect").innerHTML = `<option value="">Server not reachable</option>`;
   }
 }
-refreshAuthStatus();
+
+function renderSenderSelect() {
+  const sel = $("senderSelect");
+  const ready = state.accounts.filter(a => a.ready);
+  if (!ready.length) {
+    sel.innerHTML = `<option value="">No accounts connected</option>`;
+    sel.disabled = true;
+    state.sender = null;
+    $("senderHint").textContent = "Connect at least one account below.";
+    return;
+  }
+  sel.disabled = false;
+  sel.innerHTML = ready.map(a => {
+    const suffix = a.from ? ` — ${a.from}` : "";
+    return `<option value="${a.id}">${escapeHtml(a.label)}${escapeHtml(suffix)}</option>`;
+  }).join("");
+  if (!state.sender || !ready.find(a => a.id === state.sender)) {
+    state.sender = ready[0].id;
+  }
+  sel.value = state.sender;
+  updateSenderHint();
+}
+
+function updateSenderHint() {
+  const acc = state.accounts.find(a => a.id === state.sender);
+  if (!acc) { $("senderHint").textContent = ""; return; }
+  $("senderHint").textContent = acc.from ? `Sending as ${acc.from}` : "Sender ready";
+}
+
+$("senderSelect").onchange = (e) => {
+  state.sender = e.target.value;
+  updateSenderHint();
+};
+
+function renderAuthStatus() {
+  const parts = state.accounts.map(a => {
+    if (a.ready) {
+      return `<span class="text-emerald-600">✓ ${escapeHtml(a.label)}${a.from ? " (" + escapeHtml(a.from) + ")" : ""}</span>`;
+    }
+    if (a.id === "gmail") {
+      return `<span>✗ ${escapeHtml(a.label)} — <a href="/api/auth" class="text-indigo-500 hover:text-indigo-700 underline">connect</a></span>`;
+    }
+    return `<span title="${escapeAttr(a.hint || "")}">✗ ${escapeHtml(a.label)} — not configured</span>`;
+  });
+  const reconnect = state.accounts.find(a => a.id === "gmail" && a.ready)
+    ? ` · <a href="/api/auth" class="text-indigo-500 hover:text-indigo-700 underline">Reconnect Gmail</a>`
+    : "";
+  $("authStatus").innerHTML = parts.join(" &nbsp;·&nbsp; ") + reconnect;
+}
+
+loadAccounts();
 </script>
 
 </body>
