@@ -54,6 +54,15 @@
         </div>
       </div>
 
+      <div class="mt-3 flex items-center gap-2 text-sm flex-wrap">
+        <label class="text-slate-600">Send rows</label>
+        <input type="number" id="rangeFrom" min="1" class="w-20 border border-slate-300 rounded-lg px-2 py-1 bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+        <span class="text-slate-500">to</span>
+        <input type="number" id="rangeTo" min="1" class="w-20 border border-slate-300 rounded-lg px-2 py-1 bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+        <span id="rangeCount" class="text-xs text-slate-500 ml-1"></span>
+        <button id="rangeReset" class="text-xs text-indigo-600 hover:text-indigo-700 font-medium ml-auto">Reset to all</button>
+      </div>
+
       <div id="tableWrap" class="hidden mt-4 max-h-80 overflow-auto scrollbar-thin border border-slate-200 rounded-lg">
         <table class="min-w-full text-sm">
           <thead class="bg-slate-100 sticky top-0">
@@ -172,6 +181,8 @@ const state = {
   emailField: null,
   template: { subject: "", body: "" },
   previewIdx: 0,
+  fromIdx: 1,
+  toIdx: 1,
   delayMs: 1000,
   sending: false,
   statuses: {}, // idx -> 'pending' | 'sending' | 'sent' | 'failed'
@@ -235,11 +246,14 @@ function handleFile(file) {
       state.fields = Object.keys(rows[0]);
       state.emailField = detectEmailField(state.fields);
       state.statuses = {};
+      state.fromIdx = 1;
+      state.toIdx = rows.length;
       $("parseSummary").textContent = `Parsed ${rows.length} rows from "${file.name}" (${state.fields.length} columns)`;
       $("uploadResult").classList.remove("hidden");
       renderEmailFieldSelect();
       renderTable();
       renderPlaceholderChips();
+      renderRangeInputs();
       renderPreviewSelect();
       unlockSections();
       updateAll();
@@ -264,20 +278,74 @@ function renderEmailFieldSelect() {
   sel.onchange = () => { state.emailField = sel.value; renderPreviewSelect(); updateAll(); };
 }
 
+function getSelectedRows() {
+  return state.rows.slice(state.fromIdx - 1, state.toIdx);
+}
+
+function renderRangeInputs() {
+  const max = state.rows.length;
+  $("rangeFrom").value = state.fromIdx;
+  $("rangeTo").value = state.toIdx;
+  $("rangeFrom").max = max;
+  $("rangeTo").max = max;
+  updateRangeCount();
+}
+
+function updateRangeCount() {
+  const selected = getSelectedRows().length;
+  const total = state.rows.length;
+  $("rangeCount").textContent = `(${selected} of ${total})`;
+}
+
+function applyRangeChange() {
+  let from = parseInt($("rangeFrom").value, 10);
+  let to = parseInt($("rangeTo").value, 10);
+  const max = state.rows.length || 1;
+  if (!Number.isFinite(from) || from < 1) from = 1;
+  if (!Number.isFinite(to) || to < 1) to = max;
+  from = Math.min(from, max);
+  to = Math.min(to, max);
+  if (to < from) to = from;
+  state.fromIdx = from;
+  state.toIdx = to;
+  $("rangeFrom").value = from;
+  $("rangeTo").value = to;
+  updateRangeCount();
+  renderTable();
+  renderPreviewSelect();
+  updateAll();
+}
+
+$("rangeFrom").addEventListener("change", applyRangeChange);
+$("rangeTo").addEventListener("change", applyRangeChange);
+$("rangeFrom").addEventListener("input", updateRangeCount);
+$("rangeTo").addEventListener("input", updateRangeCount);
+$("rangeReset").addEventListener("click", () => {
+  state.fromIdx = 1;
+  state.toIdx = state.rows.length;
+  renderRangeInputs();
+  renderTable();
+  renderPreviewSelect();
+  updateAll();
+});
+
 let tableExpanded = false;
 function renderTable() {
   const head = $("tableHead");
   const body = $("tableBody");
-  head.innerHTML = state.fields.map(f =>
-    `<th class="px-3 py-2 text-left font-semibold text-slate-600 whitespace-nowrap">${escapeHtml(f)}</th>`
-  ).join("");
-  const rowsToShow = tableExpanded ? state.rows : state.rows.slice(0, 5);
-  body.innerHTML = rowsToShow.map(row =>
-    `<tr class="hover:bg-slate-50">${state.fields.map(f =>
+  head.innerHTML = `<th class="px-3 py-2 text-left font-semibold text-slate-600 whitespace-nowrap">#</th>` +
+    state.fields.map(f =>
+      `<th class="px-3 py-2 text-left font-semibold text-slate-600 whitespace-nowrap">${escapeHtml(f)}</th>`
+    ).join("");
+  const selected = getSelectedRows();
+  const rowsToShow = tableExpanded ? selected : selected.slice(0, 5);
+  const startNum = state.fromIdx;
+  body.innerHTML = rowsToShow.map((row, i) =>
+    `<tr class="hover:bg-slate-50"><td class="px-3 py-2 text-slate-400 whitespace-nowrap tabular-nums">${startNum + i}</td>${state.fields.map(f =>
       `<td class="px-3 py-2 text-slate-700 whitespace-nowrap">${escapeHtml(String(row[f] ?? ""))}</td>`
     ).join("")}</tr>`
   ).join("");
-  $("toggleTable").textContent = tableExpanded ? "Show less" : `Show all (${state.rows.length})`;
+  $("toggleTable").textContent = tableExpanded ? "Show less" : `Show all (${selected.length})`;
   $("tableWrap").classList.remove("hidden");
 }
 $("toggleTable").onclick = () => { tableExpanded = !tableExpanded; renderTable(); };
@@ -326,7 +394,7 @@ function renderTemplateWarnings() {
     if (!state.fields.includes(p)) {
       issues.push(`<code class="font-mono bg-amber-100 px-1 rounded">{{${escapeHtml(p)}}}</code> is not a column in your file`);
     } else {
-      const missing = state.rows.filter(r => !String(r[p] ?? "").trim()).length;
+      const missing = getSelectedRows().filter(r => !String(r[p] ?? "").trim()).length;
       if (missing > 0) issues.push(`<code class="font-mono bg-amber-100 px-1 rounded">{{${escapeHtml(p)}}}</code> is empty in ${missing} row${missing === 1 ? "" : "s"}`);
     }
   });
@@ -338,15 +406,18 @@ function renderTemplateWarnings() {
 // ---------- Preview ----------
 function renderPreviewSelect() {
   const sel = $("previewSelect");
-  sel.innerHTML = state.rows.map((r, i) => {
+  const from = state.fromIdx - 1;
+  const to = state.toIdx;
+  sel.innerHTML = state.rows.slice(from, to).map((r, sliceI) => {
+    const i = from + sliceI;
     const email = String(r[state.emailField] ?? "(no email)");
     return `<option value="${i}">${i + 1}. ${escapeHtml(email)}</option>`;
   }).join("");
   sel.onchange = () => { state.previewIdx = parseInt(sel.value, 10); renderPreview(); };
-  state.previewIdx = 0;
+  state.previewIdx = from;
 }
-$("prevPreview").onclick = () => { if (state.previewIdx > 0) { state.previewIdx--; $("previewSelect").value = state.previewIdx; renderPreview(); } };
-$("nextPreview").onclick = () => { if (state.previewIdx < state.rows.length - 1) { state.previewIdx++; $("previewSelect").value = state.previewIdx; renderPreview(); } };
+$("prevPreview").onclick = () => { if (state.previewIdx > state.fromIdx - 1) { state.previewIdx--; $("previewSelect").value = state.previewIdx; renderPreview(); } };
+$("nextPreview").onclick = () => { if (state.previewIdx < state.toIdx - 1) { state.previewIdx++; $("previewSelect").value = state.previewIdx; renderPreview(); } };
 
 function renderTemplate(text, row) {
   return text.replace(/\{\{(\w+)\}\}/g, (_, key) => String(row[key] ?? `{{${key}}}`));
@@ -358,8 +429,8 @@ function renderPreview() {
   $("previewTo").textContent = String(row[state.emailField] ?? "(no email)");
   $("previewSubject").textContent = renderTemplate(state.template.subject || "(no subject)", row);
   $("previewBody").textContent = renderTemplate(state.template.body || "(empty body)", row);
-  $("prevPreview").disabled = state.previewIdx === 0;
-  $("nextPreview").disabled = state.previewIdx >= state.rows.length - 1;
+  $("prevPreview").disabled = state.previewIdx <= state.fromIdx - 1;
+  $("nextPreview").disabled = state.previewIdx >= state.toIdx - 1;
 }
 
 // ---------- Send ----------
@@ -369,7 +440,7 @@ $("delaySlider").oninput = (e) => {
 };
 $("sendBtn").onclick = async () => {
   if (state.sending) return;
-  const validRows = state.rows.filter(r => String(r[state.emailField] ?? "").includes("@"));
+  const validRows = getSelectedRows().filter(r => String(r[state.emailField] ?? "").includes("@"));
   if (!validRows.length) { alert("No rows have a valid email address."); return; }
   if (!state.template.subject.trim() && !state.template.body.trim()) {
     if (!confirm("Subject and body are empty. Send anyway?")) return;
@@ -448,7 +519,7 @@ function unlockSections() {
 function updateAll() {
   renderTemplateWarnings();
   renderPreview();
-  const validCount = state.rows.filter(r => String(r[state.emailField] ?? "").includes("@")).length;
+  const validCount = getSelectedRows().filter(r => String(r[state.emailField] ?? "").includes("@")).length;
   $("sendCount").textContent = validCount;
 }
 
